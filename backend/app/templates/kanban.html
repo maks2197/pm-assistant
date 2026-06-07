@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI PM Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <style>
+        :root { --bg: #f4f7f6; --card: #ffffff; --primary: #4361ee; }
+        body { background: var(--bg); font-family: 'Inter', sans-serif; }
+        .k-wrapper { display: flex; overflow-x: auto; padding: 20px; gap: 20px; }
+        .k-col { background: #eef1f6; border-radius: 16px; min-width: 310px; max-width: 310px; padding: 15px; min-height: 80vh; }
+        .task-card { background: var(--card); border-radius: 12px; padding: 15px; margin-bottom: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); cursor: pointer; position: relative; transition: all 0.2s; }
+        .task-card:hover { transform: translateY(-2px); box-shadow: 0 8px 15px rgba(0,0,0,0.1); }
+        
+        /* ПРОКРУТКА ДЛЯ СОВЕТА ИИ */
+        .ai-box { 
+            background: #f0f4ff; 
+            border-radius: 8px; 
+            padding: 10px; 
+            font-size: 0.85rem; 
+            border-left: 4px solid var(--primary); 
+            margin-top: 10px; 
+            color: #333; 
+            display: none; 
+            white-space: pre-wrap;
+            max-height: 200px;
+            overflow-y: auto;
+            line-height: 1.4;
+        }
+        .ai-box.show { display: block; animation: fadeIn 0.3s; }
+        .ai-box::-webkit-scrollbar { width: 6px; }
+        .ai-box::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 3px; }
+        .ai-box::-webkit-scrollbar-thumb { background: #888; border-radius: 3px; }
+        .ai-box::-webkit-scrollbar-thumb:hover { background: #555; }
+        
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .task-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; }
+        .action-btn { font-size: 0.8rem; color: #666; cursor: pointer; border: 1px solid #ddd; background: #fff; padding: 4px 8px; border-radius: 6px; transition: all 0.2s; z-index: 10; }
+        .action-btn:hover { background: #f0f0f0; color: #333; }
+        .action-btn.ai-btn { color: var(--primary); border-color: var(--primary); }
+        .action-btn.ai-btn:hover { background: var(--primary); color: white; }
+        .action-btn.del { color: #dc3545; border-color: #dc3545; }
+        .action-btn.del:hover { background: #dc3545; color: white; }
+        .deadline-badge { font-size: 0.75rem; background: #fff3cd; color: #856404; padding: 3px 8px; border-radius: 6px; margin-top: 8px; display: inline-block; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <nav class="navbar bg-white border-bottom px-4 py-3 d-flex justify-content-between">
+        <span class="fw-bold fs-4">🚀 AI-PM <span class="text-primary">Dashboard</span></span>
+        <a href="/admin" class="btn btn-dark btn-sm rounded-pill px-3">⚙️ Админка</a>
+    </nav>
+    
+    <div class="k-wrapper">
+        {% for s in [('todo', '📌 Сделать'), ('progress', '⚡ В работе'), ('done', '✅ Готово')] %}
+        <div class="k-col">
+            <h6 class="text-uppercase fw-bold text-muted mb-3 small">{{s[1]}}</h6>
+            <div id="{{s[0]}}" style="min-height: 70vh;">
+                {% for t in tasks if t.status == s[0] %}
+                <div class="task-card" data-id="{{t.id}}" onclick="toggleAi(this)">
+                    <div class="task-actions" onclick="event.stopPropagation()">
+                        <button class="action-btn ai-btn" onclick="getAiAdvice({{t.id}}, this)">🤖 Совет ИИ</button>
+                        <button class="action-btn" onclick="openEditModal({{ t.id }}, {{ t.title | tojson }}, {{ t.assignee | tojson }}, {{ (t.description or '') | tojson }}, {{ (t.deadline.strftime('%Y-%m-%dT%H:%M') if t.deadline else '') | tojson }})">✏️</button>
+                        <button class="action-btn del" onclick="deleteTask({{t.id}})">✖</button>
+                    </div>
+                    <div class="fw-bold mt-2">{{t.title}}</div>
+                    <div class="text-primary small mt-1">👤 @{{t.assignee}}</div>
+                    {% if t.deadline %}
+                        <div class="deadline-badge">⏰ {{t.deadline.strftime('%d.%m %H:%M')}} МСК</div>
+                    {% endif %}
+                    {% if t.description %}
+                        <div class="small text-muted mt-2 fst-italic">{{t.description}}</div>
+                    {% endif %}
+                    <div class="ai-box"></div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="modal fade" id="editModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Редактировать задачу</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="edit_id">
+                    <div class="mb-3">
+                        <label class="form-label">Название</label>
+                        <input type="text" class="form-control" id="edit_title">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Ответственный (@ник)</label>
+                        <input type="text" class="form-control" id="edit_assignee">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Дедлайн (МСК)</label>
+                        <input type="datetime-local" class="form-control" id="edit_deadline">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Описание</label>
+                        <textarea class="form-control" id="edit_desc" rows="3"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                    <button type="button" class="btn btn-primary" onclick="saveTask()">Сохранить</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let editModal;
+        document.addEventListener('DOMContentLoaded', function() {
+            editModal = new bootstrap.Modal(document.getElementById('editModal'));
+            
+            ['todo', 'progress', 'done'].forEach(function(id) {
+                new Sortable(document.getElementById(id), { 
+                    group: 'tasks', 
+                    animation: 150, 
+                    onEnd: async function(e) {
+                        await fetch('/api/tasks/move', { 
+                            method: 'POST', 
+                            headers: {'Content-Type':'application/json'}, 
+                            body: JSON.stringify({id: e.item.getAttribute('data-id'), status: e.to.id}) 
+                        });
+                    } 
+                });
+            });
+        });
+
+        function toggleAi(card) {
+            const aiBox = card.querySelector('.ai-box');
+            if (aiBox && aiBox.innerHTML.trim() !== '') {
+                aiBox.classList.toggle('show');
+            }
+        }
+
+        async function getAiAdvice(taskId, btn) {
+            btn.disabled = true;
+            const originalText = btn.innerText;
+            btn.innerText = "⏳ Думаю...";
+            
+            try {
+                console.log("Запрос совета ИИ для задачи:", taskId);
+                const res = await fetch('/api/tasks/get_advice', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({id: taskId})
+                });
+                const data = await res.json();
+                
+                if (data.error) {
+                    alert("Ошибка: " + data.error);
+                } else {
+                    const card = btn.closest('.task-card');
+                    let aiBox = card.querySelector('.ai-box');
+                    aiBox.innerHTML = '🤖 <b>Совет ИИ:</b><br>' + data.advice;
+                    aiBox.classList.add('show');
+                }
+                btn.innerText = "🔄 Обновить совет";
+                btn.disabled = false;
+            } catch (e) {
+                console.error("Ошибка получения совета:", e);
+                alert("Ошибка сети при получении совета");
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        function openEditModal(id, title, assignee, desc, deadline) {
+            console.log("Открытие модального окна:", {id, title, assignee, desc, deadline});
+            document.getElementById('edit_id').value = id;
+            document.getElementById('edit_title').value = title;
+            document.getElementById('edit_assignee').value = '@' + assignee;
+            document.getElementById('edit_desc').value = desc;
+            document.getElementById('edit_deadline').value = deadline;
+            editModal.show();
+        }
+
+        async function saveTask() {
+            const deadlineVal = document.getElementById('edit_deadline').value;
+            const data = {
+                id: document.getElementById('edit_id').value,
+                title: document.getElementById('edit_title').value,
+                assignee: document.getElementById('edit_assignee').value,
+                description: document.getElementById('edit_desc').value,
+                deadline: deadlineVal === "" ? null : deadlineVal
+            };
+            
+            console.log("🚀 Отправляем на сервер данные задачи:", data);
+            
+            try {
+                const res = await fetch('/api/tasks/update', { 
+                    method: 'POST', 
+                    headers: {'Content-Type':'application/json'}, 
+                    body: JSON.stringify(data) 
+                });
+                
+                const result = await res.json();
+                console.log("Ответ сервера:", result);
+                
+                if (res.ok && result.ok) {
+                    console.log("✅ Сервер подтвердил обновление");
+                    editModal.hide();
+                    location.reload();
+                } else {
+                    alert("Ошибка сервера при сохранении: " + JSON.stringify(result));
+                }
+            } catch (e) {
+                console.error("❌ Ошибка сети при сохранении:", e);
+                alert("Ошибка сети при сохранении: " + e.message);
+            }
+        }
+
+        async function deleteTask(id) {
+            if(confirm('Удалить задачу?')) {
+                await fetch('/api/tasks/delete', { 
+                    method: 'POST', 
+                    headers: {'Content-Type':'application/json'}, 
+                    body: JSON.stringify({id: id}) 
+                });
+                location.reload();
+            }
+        }
+    </script>
+</body>
+</html>

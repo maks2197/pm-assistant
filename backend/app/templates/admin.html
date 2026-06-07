@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Panel</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>body { background: #0f172a; color: white; } </style>
+</head>
+<body class="p-4">
+    <div class="container" style="max-width: 1000px;">
+        <div class="d-flex justify-content-between mb-5">
+            <h3>⚙️ Командный центр</h3>
+            <a href="/kanban" class="btn btn-outline-light">🔙 К доске</a>
+        </div>
+        <div class="row g-4">
+            <div class="col-md-5">
+                <div class="card p-4 bg-dark border-0 shadow">
+                    <h5>1. Настройки AI и Бота</h5>
+                    <label class="small text-muted mt-2">TG Bot Token</label>
+                    <input type="password" id="tg_token" value="{{ settings.get('telegram_token', '') }}" class="form-control bg-secondary text-white border-0 mb-3">
+                    <label class="small text-muted">Провайдер</label>
+                    <select id="ai_p" class="form-select bg-secondary text-white border-0 mb-3">
+                        <option value="vsegpt" {% if settings.get('ai_provider')=='vsegpt' %}selected{% endif %}>VSEGPT</option>
+                        <option value="openrouter" {% if settings.get('ai_provider')=='openrouter' %}selected{% endif %}>OpenRouter</option>
+                        <option value="openai" {% if settings.get('ai_provider')=='openai' %}selected{% endif %}>OpenAI</option>
+                    </select>
+                    <label class="small text-muted">API Ключ</label>
+                    <input type="password" id="ai_k" value="{{ settings.get('ai_api_key', '') }}" class="form-control bg-secondary text-white border-0 mb-3">
+                    <label class="small text-muted">Модель ID</label>
+                    <input type="text" id="model" value="{{ settings.get('model_name', 'openai/gpt-4o-mini') }}" placeholder="напр: openai/gpt-4o-mini" class="form-control bg-secondary text-white border-0 mb-4">
+                    <button onclick="saveS()" class="btn btn-primary w-100">Сохранить настройки</button>
+                </div>
+            </div>
+            <div class="col-md-7">
+                <div class="card p-4 bg-dark border-0 shadow">
+                    <h5>2. Команда и Промпты</h5>
+                    <div class="alert alert-info py-2 small">💡 Введите существующий @ник, чтобы обновить данные. Если ника нет — будет создан новый.</div>
+                    <input type="text" id="m_n" placeholder="Имя (напр: Иван Петров)" class="form-control bg-secondary text-white border-0 mb-2">
+                    <input type="text" id="m_u" placeholder="Ник в ТГ без @ (напр: ivan_dev)" class="form-control bg-secondary text-white border-0 mb-2">
+                    <input type="text" id="m_r" placeholder="Роль (напр: Backend Developer)" class="form-control bg-secondary text-white border-0 mb-2">
+                    <textarea id="m_p" placeholder="Инструкция для ИИ (напр: Ты строгий тимлид)" class="form-control bg-secondary text-white border-0 mb-3" rows="2"></textarea>
+                    <button onclick="upsertM()" class="btn btn-success w-100">Добавить / Обновить участника</button>
+                    <hr class="border-secondary">
+                    <h6 class="text-muted mb-3">Текущая команда:</h6>
+                    {% for m in members %}
+                    <div class="small mb-2 pb-2 border-bottom border-secondary">
+                        <b>{{m.name}}</b> (@{{m.username}}) - <span class="text-info">{{m.role}}</span>
+                        <br><i class="text-muted" style="font-size:0.8em">Промпт: {{m.role_prompt}}</i>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        async function saveS(){
+            await fetch('/api/admin/settings', { 
+                method: 'POST', headers: {'Content-Type':'application/json'}, 
+                body: JSON.stringify({
+                    telegram_token: document.getElementById('tg_token').value, 
+                    ai_provider: document.getElementById('ai_p').value, 
+                    ai_api_key: document.getElementById('ai_k').value, 
+                    model_name: document.getElementById('model').value
+                }) 
+            });
+            alert('Настройки сохранены!');
+        }
+        async function upsertM(){
+            const name = document.getElementById('m_n').value.trim();
+            const username = document.getElementById('m_u').value.trim().replace('@', '');
+            const role = document.getElementById('m_r').value.trim();
+            const prompt = document.getElementById('m_p').value.trim();
+            if(!name || !username || !role) { alert('Заполните Имя, Ник и Роль!'); return; }
+            try {
+                const response = await fetch('/api/team/upsert', { 
+                    method: 'POST', headers: {'Content-Type':'application/json'}, 
+                    body: JSON.stringify({name, username, role, prompt}) 
+                });
+                const result = await response.json();
+                if(result.ok) { alert('Участник сохранен!'); location.reload(); } 
+                else { alert('Ошибка'); }
+            } catch(e) { alert('Ошибка сети: ' + e); }
+        }
+    </script>
+</body>
+</html>
