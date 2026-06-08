@@ -13,13 +13,10 @@ dp = Dispatcher()
 active_bot = None
 MSK_TZ = ZoneInfo("Europe/Moscow")
 
-
 async def get_bot():
     global active_bot
     async with async_session() as session:
-        res = await session.execute(
-            select(SystemSetting).where(SystemSetting.key_name == "telegram_token")
-        )
+        res = await session.execute(select(SystemSetting).where(SystemSetting.key_name == "telegram_token"))
         s = res.scalars().first()
         token = s.value if s else os.getenv("TELEGRAM_TOKEN")
         if token:
@@ -27,147 +24,120 @@ async def get_bot():
             return active_bot
     return None
 
-
 @dp.message(Command("start"))
 async def start(m: types.Message):
     if m.chat.type == ChatType.PRIVATE:
-        await m.answer(
-            "👋 Привет! Напиши мне задачу и дедлайн.\n"
-            "Пример: *Подготовить отчет до 25.10 15:00*\n"
-            "Или просто задачу без дедлайна: *Подготовить отчет*",
-            parse_mode="Markdown"
-        )
+        await m.answer("👋 Привет! Напиши мне задачу.\nПример: *Сделать деплой фронта до пятницы, критично для демо*", parse_mode="Markdown")
     else:
-        await m.answer(
-            "👋 AI PM Система Активна!\n\n"
-            "Пиши: `@ник задача до ДД.ММ` или `до ДД.ММ ЧЧ:ММ`\n"
-            "Пример: @ivan сделать дизайн до 25.10 18:00",
-            parse_mode="Markdown"
-        )
-
+        await m.answer("👋 AI PM Система Активна!\n\nПиши: `@ник задача до ДД.ММ` или `до дня недели`\nПример: @ivan сделать деплой до пятницы, критично", parse_mode="Markdown")
 
 async def process_task(m: types.Message, assignee: str, title: str):
-    print(f"=== НАЧАЛО ОБРАБОТКИ ЗАДАЧИ ===")
-    print(f"Ответственный: {assignee}")
-    print(f"Текст задачи: {title}")
+    print(f"=== ОБРАБОТКА: {title} ===")
+    
+    # 1. Определение приоритета
+    priority = "normal"
+    if re.search(r'\b(критично|срочно|важно|high|urgent|асап)\b', title, re.IGNORECASE):
+        priority = "high"
+        print("🔥 Обнаружен высокий приоритет!")
 
-    deadline_match = re.search(
-        r'(?:до|дедлайн)[:\s]+(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?',
-        title,
-        re.IGNORECASE
-    )
+    # 2. Парсинг дедлайна (поддержка "до пятницы" и "до 12.06")
     deadline_dt = None
     clean_title = title
-
-    if deadline_match:
-        print(f"✅ Найден дедлайн: {deadline_match.group(0)}")
-        day, month = map(int, deadline_match.group(1).split('.'))
-        time_str = deadline_match.group(2)
-        year = datetime.now().year
-
-        if time_str:
-            hour, minute = map(int, time_str.split(':'))
-            deadline_dt = datetime(year, month, day, hour, minute, tzinfo=MSK_TZ)
-            print(f"⏰ Время указано: {hour}:{minute} МСК")
-        else:
-            deadline_dt = datetime(year, month, day, 18, 0, tzinfo=MSK_TZ)
-            print(f"⏰ Время не указано, устанавливаем 18:00 МСК")
-
-        clean_title = re.sub(
-            r'(?:до|дедлайн)[:\s]+\d{2}\.\d{2}(?:\s+\d{2}:\d{2})?',
-            '',
-            title,
-            flags=re.IGNORECASE
-        ).strip()
-        print(f"🧹 Очищенный текст задачи: {clean_title}")
+    
+    # Попытка найти день недели
+    days_map = {'понедельник': 0, 'вторник': 1, 'среда': 2, 'четверг': 3, 'пятница': 4, 'суббота': 5, 'воскресенье': 6}
+    day_match = re.search(r'(?:до|дедлайн)[:\s]+(понедельник|вторник|среда|четверг|пятница|суббота|воскресенье)', title, re.IGNORECASE)
+    
+    if day_match:
+        day_name = day_match.group(1).lower()
+        target_weekday = days_map[day_name]
+        today = datetime.now(MSK_TZ)
+        days_ahead = target_weekday - today.weekday()
+        if days_ahead <= 0: # Если день уже прошел на этой неделе, берем следующую
+            days_ahead += 7
+        deadline_dt = (today + timedelta(days=days_ahead)).replace(hour=18, minute=0, second=0, microsecond=0)
+        clean_title = re.sub(r'(?:до|дедлайн)[:\s]+' + day_name, '', title, flags=re.IGNORECASE).strip()
     else:
-        print("❌ Дедлайн не найден в тексте")
+        # Стандартный парсинг ДД.ММ
+        date_match = re.search(r'(?:до|дедлайн)[:\s]+(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?', title, re.IGNORECASE)
+        if date_match:
+            day, month = map(int, date_match.group(1).split('.'))
+            time_str = date_match.group(2)
+            year = datetime.now().year
+            if time_str:
+                hour, minute = map(int, time_str.split(':'))
+                deadline_dt = datetime(year, month, day, hour, minute, tzinfo=MSK_TZ)
+            else:
+                deadline_dt = datetime(year, month, day, 18, 0, tzinfo=MSK_TZ)
+            clean_title = re.sub(r'(?:до|дедлайн)[:\s]+\d{2}\.\d{2}(?:\s+\d{2}:\d{2})?', '', title, flags=re.IGNORECASE).strip()
 
-    # КРИТИЧЕСКИ ВАЖНО: убираем часовой пояс перед сохранением в базу
+    # Убираем часовой пояс для БД
     if deadline_dt:
         deadline_dt = deadline_dt.replace(tzinfo=None)
-        print(f"💾 Сохраняем дедлайн (без TZ): {deadline_dt}")
 
     try:
         async with async_session() as session:
             new_task = Task(
-                title=clean_title,
-                assignee=assignee,
-                deadline=deadline_dt,
+                title=clean_title, 
+                assignee=assignee, 
+                priority=priority,
+                deadline=deadline_dt, 
                 chat_id=str(m.chat.id)
             )
             session.add(new_task)
             await session.commit()
-            print(f"✅ Задача успешно создана с ID: {new_task.id}")
+            print(f"✅ Задача создана. Приоритет: {priority}")
     except Exception as e:
-        print(f"❌ ОШИБКА ПРИ СОЗДАНИИ ЗАДАЧИ: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Ошибка БД: {e}")
         await m.reply(f"❌ Ошибка при создании задачи: {e}")
         return
 
-    # Начисляем XP тому, кто поставил задачу
+    # Начисление XP
     if m.from_user.username:
         async with async_session() as session:
-            res = await session.execute(
-                select(TeamMember).where(TeamMember.username == m.from_user.username)
-            )
+            res = await session.execute(select(TeamMember).where(TeamMember.username == m.from_user.username))
             user = res.scalars().first()
             if user:
                 user.xp += 10
                 await session.commit()
 
-    # Отправляем подтверждение
-    if deadline_dt:
-        deadline_text = f" (дедлайн: {deadline_dt.strftime('%d.%m %H:%M')} МСК)"
-    else:
-        deadline_text = " (без дедлайна)"
-
+    # Ответ в чат
+    deadline_text = f" (дедлайн: {deadline_dt.strftime('%d.%m %H:%M')} МСК)" if deadline_dt else ""
+    priority_text = " 🔥 **КРИТИЧНО**" if priority == "high" else ""
+    
     await m.reply(
-        f"✅ Задача для @{assignee} добавлена на доску!{deadline_text}\n\n"
+        f"✅ Задача для @{assignee} добавлена на доску!{priority_text}{deadline_text}\n\n"
         f"Совет ИИ можно получить на Канбан-доске."
     )
 
-
 @dp.message(F.chat.type == ChatType.PRIVATE, F.text)
 async def handle_private_text(m: types.Message):
-    print(f"!!! ПОЛУЧЕНО ЛИЧНОЕ СООБЩЕНИЕ: {m.text}")
-    if m.text.startswith("/"):
-        return
+    if m.text.startswith("/"): return
     assignee = m.from_user.username or "unknown"
     await process_task(m, assignee, m.text)
 
-
 @dp.message(F.chat.type.in_([ChatType.GROUP, ChatType.SUPERGROUP]), F.text)
 async def handle_group_text(m: types.Message):
-    print(f"!!! ПОЛУЧЕНО СООБЩЕНИЕ В ГРУППЕ: {m.text}")
-    if m.text.startswith("/"):
-        return
-
+    if m.text.startswith("/"): return
     match = re.search(r'@(\w+)', m.text)
-    if not match:
-        print("!!! НЕ НАЙДЕН УПОМИНАНИЕ @nik")
-        return
-
+    if not match: return
+    
     assignee = match.group(1)
     title = m.text.replace(f"@{assignee}", "").strip()
-    if not title:
-        return
-
+    if not title: return
+    
     await process_task(m, assignee, title)
-
 
 async def check_deadlines():
     global active_bot
     while True:
-        await asyncio.sleep(3600)  # Проверка каждый час
-        if not active_bot:
-            continue
-
-        # КРИТИЧЕСКИ ВАЖНО: используем naive datetime (без часового пояса)
+        # ⚠️ ДЛЯ ДЕМО: 300 секунд (5 минут). После хакатона поменяйте на 3600 (1 час)
+        await asyncio.sleep(300) 
+        if not active_bot: continue
+            
         now = datetime.now()
         soon = now + timedelta(hours=2)
-
+        
         async with async_session() as session:
             res = await session.execute(
                 select(Task).where(
@@ -178,7 +148,7 @@ async def check_deadlines():
                 )
             )
             tasks = res.scalars().all()
-
+            
             for task in tasks:
                 if task.chat_id:
                     try:
@@ -201,7 +171,7 @@ async def start_polling():
     bot = await get_bot()
     if bot:
         asyncio.create_task(check_deadlines())
-        print("✅ Бот запущен и начал polling")
+        print("✅ Бот запущен. Проверка дедлайнов каждые 5 минут (демо-режим).")
         await dp.start_polling(bot)
     else:
-        print("❌ Токен бота не найден! Проверьте .env файл")
+        print("❌ Токен бота не найден!")

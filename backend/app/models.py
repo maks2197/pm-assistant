@@ -23,6 +23,7 @@ class Task(Base):
     description = Column(Text, nullable=True)
     assignee = Column(String)
     status = Column(String, default="todo")
+    priority = Column(String, default="normal") # <-- ДОБАВЛЕНО
     ai_advice = Column(Text, nullable=True)
     deadline = Column(DateTime, nullable=True)
     chat_id = Column(String, nullable=True)
