@@ -1,5 +1,7 @@
 import os
+import sys
 import asyncio
+import html 
 from datetime import datetime
 from fastapi import FastAPI, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,8 +29,11 @@ async def startup():
 async def kanban(request: Request):
     async with async_session() as session:
         t = await session.execute(select(Task).order_by(Task.id.desc()))
-        m = await session.execute(select(TeamMember).order_by(TeamMember.xp.desc()))
-        return templates.TemplateResponse(request, "kanban.html", {"tasks": t.scalars().all(), "members": m.scalars().all()})
+        m = await session.execute(select(TeamMember))
+        return templates.TemplateResponse(request, "kanban.html", {
+            "tasks": t.scalars().all(),
+            "members": m.scalars().all()
+        })
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin(request: Request):
@@ -36,7 +41,10 @@ async def admin(request: Request):
         m = await session.execute(select(TeamMember))
         s = await session.execute(select(SystemSetting))
         settings = {row.key_name: row.value for row in s.scalars().all()}
-        return templates.TemplateResponse(request, "admin.html", {"members": m.scalars().all(), "settings": settings})
+        return templates.TemplateResponse(request, "admin.html", {
+            "members": m.scalars().all(),
+            "settings": settings
+        })
 
 @app.post("/api/admin/settings")
 async def settings(data: dict = Body(...)):
@@ -61,15 +69,36 @@ async def upsert_member(data: dict = Body(...)):
 
 @app.post("/api/tasks/update")
 async def update_task(data: dict = Body(...)):
+    sys.stderr.write(f"🔥 UPDATE REQUEST: {data}\n"); sys.stderr.flush()
+    
     async with async_session() as session:
         task_id = int(data['id'])
+        
+        # Проверяем старого исполнителя
+        res = await session.execute(select(Task).where(Task.id == task_id))
+        old_task = res.scalars().first()
+        
+        new_assignee = data.get('assignee', '').replace("@", "")
         deadline_str = data.get('deadline')
         deadline_dt = datetime.strptime(deadline_str, "%Y-%m-%dT%H:%M") if deadline_str and str(deadline_str).strip() else None
-        await session.execute(update(Task).where(Task.id == task_id).values(
-            title=data.get('title', ''), assignee=data.get('assignee', '').replace("@", ""),
-            description=data.get('description', ''), deadline=deadline_dt
-        ))
+        
+        # Формируем поля для обновления
+        update_values = {
+            "title": data.get('title', ''),
+            "assignee": new_assignee,
+            "description": data.get('description', ''),
+            "deadline": deadline_dt
+        }
+        
+        # 🔥 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Если исполнитель изменился, сбрасываем старый совет ИИ
+        if old_task and old_task.assignee != new_assignee:
+            update_values["ai_advice"] = None
+            sys.stderr.write("🧹 Старый совет ИИ сброшен (исполнитель изменен)\n"); sys.stderr.flush()
+            
+        await session.execute(update(Task).where(Task.id == task_id).values(**update_values))
         await session.commit()
+        
+    sys.stderr.write("✅ Задача успешно обновлена в БД\n"); sys.stderr.flush()
     return {"ok": True}
 
 @app.post("/api/tasks/get_advice")
@@ -78,8 +107,11 @@ async def get_task_advice(data: dict = Body(...)):
     async with async_session() as session:
         res = await session.execute(select(Task).where(Task.id == task_id))
         task = res.scalars().first()
-        if not task: return {"error": "Not found"}
-        if task.ai_advice: return {"advice": task.ai_advice}
+        if not task: return {"error": "Task not found"}
+        
+        # 🔥 ВСЕГДА ГЕНЕРИРУЕМ НОВЫЙ СОВЕТ (отключаем кэш для демо)
+        sys.stderr.write(f"🤖 Генерируем свежий совет ИИ для задачи {task_id} (@{task.assignee})\n"); sys.stderr.flush()
+        
         advice = await get_ai_advice(task.title, task.assignee)
         await session.execute(update(Task).where(Task.id == task_id).values(ai_advice=advice))
         await session.commit()
@@ -87,28 +119,56 @@ async def get_task_advice(data: dict = Body(...)):
 
 @app.post("/api/tasks/move")
 async def move_task(data: dict = Body(...)):
+    sys.stderr.write(f"🚨 MOVE REQUEST: {data}\n"); sys.stderr.flush()
+    
     task_id = int(data['id'])
     new_status = data['status']
     
     async with async_session() as session:
         res = await session.execute(select(Task).where(Task.id == task_id))
         task = res.scalars().first()
+        
+        if not task:
+            sys.stderr.write("❌ ОШИБКА: Задача не найдена в БД\n"); sys.stderr.flush()
+            return {"ok": False, "error": "Task not found"}
+            
+        sys.stderr.write(f"✅ Задача найдена: '{task.title}', chat_id='{task.chat_id}'\n"); sys.stderr.flush()
+        
         await session.execute(update(Task).where(Task.id == task_id).values(status=new_status))
         await session.commit()
 
-    # 🔥 ОТПРАВКА УВЕДОМЛЕНИЯ О ПЕРЕНОСЕ
-    if task and task.chat_id:
+    if task and task.chat_id and str(task.chat_id).strip():
         try:
             async with async_session() as session:
                 s_res = await session.execute(select(SystemSetting).where(SystemSetting.key_name == "telegram_token"))
-                token = (s_res.scalars().first().value) if s_res.scalars().first() else os.getenv("TELEGRAM_TOKEN")
-            if token:
+                s = s_res.scalars().first()
+                token = s.value if s else os.getenv("TELEGRAM_TOKEN")
+
+            if not token:
+                sys.stderr.write("❌ ОШИБКА: Токен бота не найден!\n"); sys.stderr.flush()
+            else:
                 bot = Bot(token=token)
-                status_map = {"backlog": "📥 В Бэклог", "todo": "📌 В работу", "progress": "⚡ Продолжена", "done": "✅ Завершена"}
-                await bot.send_message(chat_id=task.chat_id, text=f"🔄 **Статус изменен!**\nЗадача: *{task.title}*\nНовый статус: {status_map.get(new_status, new_status)}", parse_mode=ParseMode.MARKDOWN)
+                status_map = {
+                    "backlog": "📥 В Бэклог",
+                    "todo": "📌 В работу",
+                    "progress": "⚡ Продолжена",
+                    "done": "✅ Завершена"
+                }
+                status_text = status_map.get(new_status, new_status)
+                assignee_tag = f"@{task.assignee}" if task.assignee != "Не_назначен" else "Не назначен"
+
+                await bot.send_message(
+                    chat_id=task.chat_id,
+                    text=f"🔄 **Статус изменен!**\nЗадача: *{task.title}*\nИсполнитель: {assignee_tag}\nНовый статус: {status_text}",
+                    parse_mode=ParseMode.MARKDOWN
+                )
                 await bot.session.close()
+                sys.stderr.write("✅ УВЕДОМЛЕНИЕ В TELEGRAM ОТПРАВЛЕНО!\n"); sys.stderr.flush()
         except Exception as e:
-            print(f"Ошибка уведомления: {e}")
+            sys.stderr.write(f"❌ ОШИБКА ОТПРАВКИ: {e}\n"); sys.stderr.flush()
+    else:
+        sys.stderr.write("⚠️ ПРОПУСК: У задачи отсутствует chat_id (задача создана не через Telegram)\n"); sys.stderr.flush()
+
     return {"ok": True}
 
 @app.post("/api/tasks/delete")

@@ -151,15 +151,39 @@
     <div class="modal fade" id="editModal" tabindex="-1">
         <div class="modal-dialog">
             <div class="modal-content">
-                <div class="modal-header"><h5 class="modal-title">Редактировать задачу</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                <div class="modal-header">
+                    <h5 class="modal-title">Редактировать задачу</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
                 <div class="modal-body">
                     <input type="hidden" id="edit_id">
-                    <div class="mb-3"><label class="form-label">Название</label><input type="text" class="form-control" id="edit_title"></div>
-                    <div class="mb-3"><label class="form-label">Ответственный (@ник)</label><input type="text" class="form-control" id="edit_assignee"></div>
-                    <div class="mb-3"><label class="form-label">Дедлайн (МСК)</label><input type="datetime-local" class="form-control" id="edit_deadline"></div>
-                    <div class="mb-3"><label class="form-label">Описание</label><textarea class="form-control" id="edit_desc" rows="3"></textarea></div>
+                    <div class="mb-3">
+                        <label class="form-label">Название</label>
+                        <input type="text" class="form-control" id="edit_title">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Ответственный</label>
+                        <!-- ЗАМЕНЕНО: Выпадающий список вместо текстового поля -->
+                        <select class="form-select" id="edit_assignee">
+                            <option value="Не_назначен">📥 Не назначен (отправить в Бэклог)</option>
+                            {% for m in members %}
+                                <option value="{{ m.username }}">{{ m.name }} (@{{ m.username }}) — {{ m.role }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Дедлайн (МСК)</label>
+                        <input type="datetime-local" class="form-control" id="edit_deadline">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Описание</label>
+                        <textarea class="form-control" id="edit_desc" rows="3"></textarea>
+                    </div>
                 </div>
-                <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button><button type="button" class="btn btn-primary" onclick="saveTask()">Сохранить</button></div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                    <button type="button" class="btn btn-primary" onclick="saveTask()">Сохранить</button>
+                </div>
             </div>
         </div>
     </div>
@@ -209,16 +233,20 @@
                 btn.innerText = "🔄 Обновить совет"; btn.disabled = false;
             } catch (e) { alert("Ошибка сети"); btn.innerText = "🤖 Совет ИИ"; btn.disabled = false; }
         }
-
         function openEditModal(id, title, assignee, desc, deadline) {
             document.getElementById('edit_id').value = id;
             document.getElementById('edit_title').value = title;
-            document.getElementById('edit_assignee').value = assignee.startsWith('@') ? assignee : '@' + assignee;
+            
+            // Убираем символ '@', если он есть, чтобы значение совпало с value в <option>
+            const cleanAssignee = assignee.startsWith('@') ? assignee.substring(1) : assignee;
+            
+            // Устанавливаем значение в выпадающем списке (или "Не_назначен", если пусто)
+            document.getElementById('edit_assignee').value = cleanAssignee || 'Не_назначен';
+            
             document.getElementById('edit_desc').value = desc || '';
             document.getElementById('edit_deadline').value = deadline || ''; 
             editModal.show();
         }
-
         async function saveTask() {
             const deadlineVal = document.getElementById('edit_deadline').value;
             const data = {

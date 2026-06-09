@@ -76,11 +76,13 @@ async def handle_private_text(m: types.Message):
 
 @dp.message(F.chat.type.in_([ChatType.GROUP, ChatType.SUPERGROUP]), F.text)
 async def handle_group_text(m: types.Message):
-    if m.text.startswith("/"): return
+    # Игнорируем команды бота
+    if m.text.startswith("/"):
+        return
     
     text_lower = m.text.lower()
-    # Ключевые слова, указывающие на задачу
-    keywords = ["сделать", "задача", "нужно", "деплой", "проверить", "исправить", "добавить", "написать", "до", "дедлайн", "срок", "подготовить", "выполнить", "срок"]
+    # Ключевые слова, указывающие на постановку задачи
+    keywords = ["сделать", "задача", "нужно", "деплой", "проверить", "исправить", "добавить", "написать", "до", "дедлайн", "срок", "подготовить", "выполнить"]
     
     # 1. Сначала проверяем наличие ключевых слов
     has_keyword = any(kw in text_lower for kw in keywords)
@@ -97,8 +99,10 @@ async def handle_group_text(m: types.Message):
         assignee = "Не_назначен"
         title = m.text.strip()
     
-    if not title: return
+    if not title:
+        return
     
+    # Передаем на обработку
     await process_task(m, assignee, title)
 
 async def process_task(m: types.Message, assignee: str, title: str):
